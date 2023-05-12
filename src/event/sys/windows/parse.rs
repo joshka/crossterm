@@ -1,8 +1,9 @@
 use crossterm_winapi::{ControlKeyState, EventFlags, KeyEventRecord, ScreenBuffer};
+
 use winapi::um::{
     wincon::{
-        CAPSLOCK_ON, LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, RIGHT_ALT_PRESSED, RIGHT_CTRL_PRESSED,
-        SHIFT_PRESSED,
+        CAPSLOCK_ON, LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, NUMLOCK_ON, RIGHT_ALT_PRESSED,
+        RIGHT_CTRL_PRESSED, SHIFT_PRESSED,
     },
     winuser::{
         GetForegroundWindow, GetKeyboardLayout, GetWindowThreadProcessId, ToUnicodeEx, VK_BACK,
@@ -13,8 +14,10 @@ use winapi::um::{
 };
 
 use crate::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
+use crate::event::sys::windows::surrogate::{MIN_HIGH_SURROGATE, MAX_HIGH_SURROGATE, MIN_LOW_SURROGATE, MAX_LOW_SURROGATE, HighSurrogate, LowSurrogate, to_supplementary_code_point};
 
 #[derive(Default)]
 pub struct MouseButtonsPressed {
@@ -34,46 +37,10 @@ pub(crate) fn handle_mouse_event(
     None
 }
 
-enum WindowsKeyEvent {
+pub(crate) enum WindowsKeyEvent {
     KeyEvent(KeyEvent),
-    Surrogate(u16),
-}
-
-pub(crate) fn handle_key_event(
-    key_event: KeyEventRecord,
-    surrogate_buffer: &mut Option<u16>,
-) -> Option<Event> {
-    let windows_key_event = parse_key_event_record(&key_event)?;
-    match windows_key_event {
-        WindowsKeyEvent::KeyEvent(key_event) => {
-            // Discard any buffered surrogate value if another valid key event comes before the
-            // next surrogate value.
-            *surrogate_buffer = None;
-            Some(Event::Key(key_event))
-        }
-        WindowsKeyEvent::Surrogate(new_surrogate) => {
-            let ch = handle_surrogate(surrogate_buffer, new_surrogate)?;
-            let modifiers = KeyModifiers::from(&key_event.control_key_state);
-            let key_event = KeyEvent::new(KeyCode::Char(ch), modifiers);
-            Some(Event::Key(key_event))
-        }
-    }
-}
-
-fn handle_surrogate(surrogate_buffer: &mut Option<u16>, new_surrogate: u16) -> Option<char> {
-    match *surrogate_buffer {
-        Some(buffered_surrogate) => {
-            *surrogate_buffer = None;
-            std::char::decode_utf16([buffered_surrogate, new_surrogate])
-                .next()
-                .unwrap()
-                .ok()
-        }
-        None => {
-            *surrogate_buffer = Some(new_surrogate);
-            None
-        }
-    }
+    HighSurrogate(HighSurrogate),
+    LowSurrogate(LowSurrogate),
 }
 
 impl From<&ControlKeyState> for KeyModifiers {
@@ -201,7 +168,37 @@ fn get_char_for_key(key_event: &KeyEventRecord) -> Option<char> {
     Some(ch)
 }
 
-fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent> {
+fn key_event_state_from(control_key_state: &ControlKeyState) -> KeyEventState {
+    let mut key_event_state = KeyEventState::empty();
+    if control_key_state.has_state(NUMLOCK_ON) {
+        key_event_state.insert(KeyEventState::NUM_LOCK);
+    }
+    if control_key_state.has_state(CAPSLOCK_ON) {
+        key_event_state.insert(KeyEventState::CAPS_LOCK);
+    }
+    key_event_state
+}
+
+pub(crate) fn surrogate_pair_to_key_event(
+    high: u16,
+    low: u16,
+    modifiers: KeyModifiers,
+    key_event_kind: KeyEventKind,
+    key_event_state: KeyEventState,
+) -> Event {
+    let ch = to_supplementary_code_point(high, low);
+    // SAFETY: we checked that it's a legal surrogate pair
+    let ch = unsafe { char::from_u32_unchecked(ch) };
+    let key_event = KeyEvent::new_with_kind_and_state(
+        KeyCode::Char(ch),
+        modifiers,
+        key_event_kind,
+        key_event_state,
+    );
+    Event::Key(key_event)
+}
+
+pub(crate) fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent> {
     let modifiers = KeyModifiers::from(&key_event.control_key_state);
     let virtual_key_code = key_event.virtual_key_code as i32;
 
@@ -211,8 +208,30 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
     if is_alt_code {
         let utf16 = key_event.u_char;
         match utf16 {
-            surrogate @ 0xD800..=0xDFFF => {
-                return Some(WindowsKeyEvent::Surrogate(surrogate));
+            high @ MIN_HIGH_SURROGATE..=MAX_HIGH_SURROGATE => {
+                let key_event_kind = if key_event.key_down {
+                    KeyEventKind::Press
+                } else {
+                    KeyEventKind::Release
+                };
+                let key_event_state = key_event_state_from(&key_event.control_key_state);
+                return Some(WindowsKeyEvent::HighSurrogate(HighSurrogate {
+                    high,
+                    modifiers,
+                    key_event_kind,
+                    key_event_state,
+                }));
+            }
+            low @ MIN_LOW_SURROGATE..=MAX_LOW_SURROGATE => {
+                let key_event_kind = if key_event.key_down {
+                    KeyEventKind::Press
+                } else {
+                    KeyEventKind::Release
+                };
+                return Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
+                    low,
+                    key_event_kind,
+                }));
             }
             unicode_scalar_value => {
                 // Unwrap is safe: We tested for surrogate values above and those are the only
@@ -268,8 +287,30 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
                     // are handled by their virtual key codes above.
                     get_char_for_key(key_event).map(KeyCode::Char)
                 }
-                surrogate @ 0xD800..=0xDFFF => {
-                    return Some(WindowsKeyEvent::Surrogate(surrogate));
+                high @ MIN_HIGH_SURROGATE..=MAX_HIGH_SURROGATE => {
+                    let key_event_kind = if key_event.key_down {
+                        KeyEventKind::Press
+                    } else {
+                        KeyEventKind::Release
+                    };
+                    let key_event_state = key_event_state_from(&key_event.control_key_state);
+                    return Some(WindowsKeyEvent::HighSurrogate(HighSurrogate {
+                        high,
+                        modifiers,
+                        key_event_kind,
+                        key_event_state,
+                    }));
+                }
+                low @ MIN_LOW_SURROGATE..=MAX_LOW_SURROGATE => {
+                    let key_event_kind = if key_event.key_down {
+                        KeyEventKind::Press
+                    } else {
+                        KeyEventKind::Release
+                    };
+                    return Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
+                        low,
+                        key_event_kind,
+                    }));
                 }
                 unicode_scalar_value => {
                     // Unwrap is safe: We tested for surrogate values above and those are the only

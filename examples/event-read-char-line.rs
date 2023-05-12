@@ -3,42 +3,98 @@
 //!
 //! cargo run --example event-read-char-line
 
-use std::io;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Read line until enter key is hit. Press Ctrl+C to exit.");
 
-pub fn read_char() -> io::Result<char> {
+    let mut pressed_code_points = String::new();
+    let mut released_code_points = String::new();
+    let mut repeated_code_points = String::new();
     loop {
-        if let Event::Key(KeyEvent {
-            code: KeyCode::Char(c),
-            ..
-        }) = event::read()?
-        {
-            return Ok(c);
+        match event::read()? {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                kind: KeyEventKind::Press,
+                state,
+            }) => {
+                pressed_code_points.push(ch);
+                println!("code: KeyCode::Char({ch:?}), modifiers: {modifiers:?}, kind: KeyEventKind::Press, state: {state:?}");
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                kind: KeyEventKind::Release,
+                state,
+            }) => {
+                released_code_points.push(ch);
+                println!("code: KeyCode::Char({ch:?}), modifiers: {modifiers:?}, kind: KeyEventKind::Release, state: {state:?}");
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                kind: KeyEventKind::Repeat,
+                state,
+            }) => {
+                repeated_code_points.push(ch);
+                println!("code: KeyCode::Char({ch:?}), modifiers: {modifiers:?}, kind: KeyEventKind::Repeat, state: {state:?}");
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers,
+                kind: KeyEventKind::Press,
+                state,
+            }) if !pressed_code_points.is_empty() => {
+                dbg!(&pressed_code_points);
+                println!("abstract_characters: {pressed_code_points}, modifiers: {modifiers:?}, kind: KeyEventKind::Press, state: {state:?}");
+                pressed_code_points.clear();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers,
+                kind: KeyEventKind::Press,
+                state,
+            }) => {
+                println!("code: KeyCode::Enter, modifiers: {modifiers:?}, kind: KeyEventKind::Press, state: {state:?}");
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers,
+                kind: KeyEventKind::Release,
+                state,
+            }) if !released_code_points.is_empty() => {
+                dbg!(&released_code_points);
+                println!("abstract_characters: {released_code_points}, modifiers: {modifiers:?}, kind: KeyEventKind::Release, state: {state:?}");
+                released_code_points.clear();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers,
+                kind: KeyEventKind::Release,
+                state,
+            }) => {
+                println!("code: KeyCode::Enter, modifiers: {modifiers:?}, kind: KeyEventKind::Release, state: {state:?}");
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers,
+                kind: KeyEventKind::Repeat,
+                state,
+            }) if !repeated_code_points.is_empty() => {
+                dbg!(&repeated_code_points);
+                println!("abstract_characters: {repeated_code_points}, modifiers: {modifiers:?}, kind: KeyEventKind::Repeat, state: {state:?}");
+                repeated_code_points.clear();
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers,
+                kind: KeyEventKind::Repeat,
+                state,
+            }) => {
+                println!("code: KeyCode::Enter, modifiers: {modifiers:?}, kind: KeyEventKind::Repeat, state: {state:?}");
+            }
+            e @ _ => println!("{e:?}"),
         }
     }
-}
-
-pub fn read_line() -> io::Result<String> {
-    let mut line = String::new();
-    while let Event::Key(KeyEvent { code, .. }) = event::read()? {
-        match code {
-            KeyCode::Enter => {
-                break;
-            }
-            KeyCode::Char(c) => {
-                line.push(c);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(line)
-}
-
-fn main() {
-    println!("read line:");
-    println!("{:?}", read_line());
-    println!("read char:");
-    println!("{:?}", read_char());
 }

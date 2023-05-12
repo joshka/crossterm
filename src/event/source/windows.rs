@@ -3,15 +3,19 @@ use std::time::Duration;
 use crossterm_winapi::{Console, Handle, InputRecord};
 
 use crate::event::{
-    sys::windows::{parse::MouseButtonsPressed, poll::WinApiPoll},
-    Event,
+    sys::windows::{
+        parse::{surrogate_pair_to_key_event, MouseButtonsPressed, WindowsKeyEvent},
+        poll::WinApiPoll,
+        surrogate::{missing_high_surrogate, two_high_surrogates, HighSurrogate, LowSurrogate},
+    },
+    Event, KeyEventKind,
 };
 
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
 use crate::event::{
     source::EventSource,
-    sys::windows::parse::{handle_key_event, handle_mouse_event},
+    sys::windows::parse::{handle_mouse_event, parse_key_event_record},
     timeout::PollTimeout,
     InternalEvent,
 };
@@ -19,7 +23,9 @@ use crate::event::{
 pub(crate) struct WindowsEventSource {
     console: Console,
     poll: WinApiPoll,
-    surrogate_buffer: Option<u16>,
+    pressed_high_surrogate: Option<HighSurrogate>,
+    released_high_surrogate: Option<HighSurrogate>,
+    repeated_high_surrogate: Option<HighSurrogate>,
     mouse_buttons_pressed: MouseButtonsPressed,
 }
 
@@ -34,7 +40,9 @@ impl WindowsEventSource {
             #[cfg(feature = "event-stream")]
             poll: WinApiPoll::new()?,
 
-            surrogate_buffer: None,
+            pressed_high_surrogate: None,
+            released_high_surrogate: None,
+            repeated_high_surrogate: None,
             mouse_buttons_pressed: MouseButtonsPressed::default(),
         })
     }
@@ -49,9 +57,132 @@ impl EventSource for WindowsEventSource {
                 let number = self.console.number_of_console_input_events()?;
                 if event_ready && number != 0 {
                     let event = match self.console.read_single_input_event()? {
-                        InputRecord::KeyEvent(record) => {
-                            handle_key_event(record, &mut self.surrogate_buffer)
-                        }
+                        InputRecord::KeyEvent(record) => match parse_key_event_record(&record) {
+                            Some(WindowsKeyEvent::KeyEvent(key_event)) => {
+                                Some(Event::Key(key_event))
+                            }
+                            Some(WindowsKeyEvent::HighSurrogate(HighSurrogate {
+                                high,
+                                modifiers,
+                                key_event_kind: key_event_kind @ KeyEventKind::Press,
+                                key_event_state,
+                            })) => {
+                                if let Some(HighSurrogate {
+                                    high: pending_high, ..
+                                }) = self.pressed_high_surrogate.replace(HighSurrogate {
+                                    high,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                }) {
+                                    return Err(two_high_surrogates(pending_high, high));
+                                } else {
+                                    continue;
+                                }
+                            }
+                            Some(WindowsKeyEvent::HighSurrogate(HighSurrogate {
+                                high,
+                                modifiers,
+                                key_event_kind: key_event_kind @ KeyEventKind::Release,
+                                key_event_state,
+                            })) => {
+                                if let Some(HighSurrogate {
+                                    high: pending_high, ..
+                                }) = self.released_high_surrogate.replace(HighSurrogate {
+                                    high,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                }) {
+                                    return Err(two_high_surrogates(pending_high, high));
+                                } else {
+                                    continue;
+                                }
+                            }
+                            Some(WindowsKeyEvent::HighSurrogate(HighSurrogate {
+                                high,
+                                modifiers,
+                                key_event_kind: key_event_kind @ KeyEventKind::Repeat,
+                                key_event_state,
+                            })) => {
+                                if let Some(HighSurrogate {
+                                    high: pending_high, ..
+                                }) = self.repeated_high_surrogate.replace(HighSurrogate {
+                                    high,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                }) {
+                                    return Err(two_high_surrogates(pending_high, high));
+                                } else {
+                                    continue;
+                                }
+                            }
+                            Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
+                                low,
+                                key_event_kind: KeyEventKind::Press,
+                                ..
+                            })) => match self.pressed_high_surrogate.take() {
+                                Some(HighSurrogate {
+                                    high,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                }) => Some(surrogate_pair_to_key_event(
+                                    high,
+                                    low,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                )),
+                                None => {
+                                    return Err(missing_high_surrogate(low));
+                                }
+                            },
+                            Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
+                                low,
+                                key_event_kind: KeyEventKind::Release,
+                                ..
+                            })) => match self.released_high_surrogate.take() {
+                                Some(HighSurrogate {
+                                    high,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                }) => Some(surrogate_pair_to_key_event(
+                                    high,
+                                    low,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                )),
+                                None => {
+                                    return Err(missing_high_surrogate(low));
+                                }
+                            },
+                            Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
+                                low,
+                                key_event_kind: KeyEventKind::Repeat,
+                                ..
+                            })) => match self.repeated_high_surrogate.take() {
+                                Some(HighSurrogate {
+                                    high,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                }) => Some(surrogate_pair_to_key_event(
+                                    high,
+                                    low,
+                                    modifiers,
+                                    key_event_kind,
+                                    key_event_state,
+                                )),
+                                None => {
+                                    return Err(missing_high_surrogate(low));
+                                }
+                            },
+                            None => None,
+                        },
                         InputRecord::MouseEvent(record) => {
                             let mouse_event =
                                 handle_mouse_event(record, &self.mouse_buttons_pressed);
