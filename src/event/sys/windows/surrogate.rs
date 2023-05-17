@@ -1,7 +1,4 @@
-use std::{
-    fmt::{self, Write as _},
-    io,
-};
+use std::fmt;
 
 use crate::event::{KeyEventKind, KeyEventState, KeyModifiers};
 
@@ -35,20 +32,6 @@ pub(crate) struct HighSurrogate {
 pub(crate) struct LowSurrogate {
     pub(crate) low: u16,
     pub(crate) key_event_kind: KeyEventKind,
-}
-
-pub(crate) fn two_high_surrogates(pending_high: u16, high: u16) -> io::Error {
-    let mut error = String::new();
-    write!(error, "two high surrogates {pending_high:?} and {high:?}").unwrap();
-    let error = IllegalSurrogate(error);
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-pub(crate) fn missing_high_surrogate(low: u16) -> io::Error {
-    let mut error = String::new();
-    write!(error, "missing high surrogate {low:?}").unwrap();
-    let error = IllegalSurrogate(error);
-    io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
 /// Convert surrogate pair to supplementary code point.

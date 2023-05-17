@@ -6,7 +6,7 @@ use crate::event::{
     sys::windows::{
         parse::{surrogate_pair_to_key_event, MouseButtonsPressed, WindowsKeyEvent},
         poll::WinApiPoll,
-        surrogate::{missing_high_surrogate, two_high_surrogates, HighSurrogate, LowSurrogate},
+        surrogate::{HighSurrogate, LowSurrogate},
     },
     Event, KeyEventKind,
 };
@@ -75,7 +75,7 @@ impl EventSource for WindowsEventSource {
                                     key_event_kind,
                                     key_event_state,
                                 }) {
-                                    return Err(two_high_surrogates(pending_high, high));
+                                    panic!("two high surrogates {pending_high:?} and {high:?}");
                                 } else {
                                     continue;
                                 }
@@ -94,7 +94,7 @@ impl EventSource for WindowsEventSource {
                                     key_event_kind,
                                     key_event_state,
                                 }) {
-                                    return Err(two_high_surrogates(pending_high, high));
+                                    panic!("two high surrogates {pending_high:?} and {high:?}");
                                 } else {
                                     continue;
                                 }
@@ -113,7 +113,7 @@ impl EventSource for WindowsEventSource {
                                     key_event_kind,
                                     key_event_state,
                                 }) {
-                                    return Err(two_high_surrogates(pending_high, high));
+                                    panic!("two high surrogates {pending_high:?} and {high:?}");
                                 } else {
                                     continue;
                                 }
@@ -135,9 +135,7 @@ impl EventSource for WindowsEventSource {
                                     key_event_kind,
                                     key_event_state,
                                 )),
-                                None => {
-                                    return Err(missing_high_surrogate(low));
-                                }
+                                None => panic!("missing high surrogate {low:?}"),
                             },
                             Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
                                 low,
@@ -156,9 +154,7 @@ impl EventSource for WindowsEventSource {
                                     key_event_kind,
                                     key_event_state,
                                 )),
-                                None => {
-                                    return Err(missing_high_surrogate(low));
-                                }
+                                None => panic!("missing high surrogate {low:?}"),
                             },
                             Some(WindowsKeyEvent::LowSurrogate(LowSurrogate {
                                 low,
@@ -177,9 +173,7 @@ impl EventSource for WindowsEventSource {
                                     key_event_kind,
                                     key_event_state,
                                 )),
-                                None => {
-                                    return Err(missing_high_surrogate(low));
-                                }
+                                None => panic!("missing high surrogate {low:?}"),
                             },
                             None => None,
                         },
